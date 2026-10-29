@@ -75,10 +75,27 @@ impl Automation {
         let scale = (dpi / 72.0) as f32;
         let block = a.opt_int("hide_text_block")?;
         let added = a.opt_int("hide_added_text")?;
-        if block.is_some() && added.is_some() {
-            return Err(ToolError::InvalidArgs("choose only one of hide_text_block and hide_added_text".into()));
+        let preview = a.opt_int("text_block_preview")?;
+        let layer = a.opt_str("text_block_layer")?;
+        if [block, added, preview].iter().filter(|v| v.is_some()).count() > 1 {
+            return Err(ToolError::InvalidArgs("choose only one of hide_text_block, hide_added_text and text_block_preview".into()));
         }
-        let out = if let Some(block) = block {
+        if layer.is_some() && preview.is_none() {
+            return Err(ToolError::InvalidArgs("text_block_layer requires text_block_preview".into()));
+        }
+        let out = if let Some(block) = preview {
+            if block < 1 {
+                return Err(ToolError::InvalidArgs("text_block_preview must be a positive paragraph index from text_paragraphs".into()));
+            }
+            let doc = self.doc(a)?;
+            let index = self.paragraph_index(doc.id, page, block, &doc.text_blocks(page))?;
+            let preview = match layer.unwrap_or("glyphs") {
+                "glyphs" => doc.text_block_alone(page, index),
+                "background" => doc.text_block_background(page, index),
+                _ => return Err(ToolError::InvalidArgs("text_block_layer must be glyphs or background".into())),
+            };
+            preview.map_err(failed)?.render_background(scale).map_err(failed)?
+        } else if let Some(block) = block {
             if block < 1 {
                 return Err(ToolError::InvalidArgs("hide_text_block must be a positive paragraph index from text_paragraphs".into()));
             }

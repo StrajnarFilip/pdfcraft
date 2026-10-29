@@ -1,5 +1,13 @@
 # Editing existing text and source subsets
 
+> **Last reviewed:** 2026-10-29 · **Last updated:** 2026-10-29 · **Change:** minor (#5212: source paragraph move previews; no readiness re-estimate)
+
+Dragging a closed paragraph, or the frame of its open editor, shows its original glyphs following
+the pointer. The page background stays in place. Two rasters are prepared once for the gesture;
+pointer movement translates the cached glyph texture, and release commits one undoable move.
+The preview stays until the updated page arrives. Mixed-object selections and width resizing
+continue to use outlines. If a source preview cannot be prepared, its outline remains available.
+
 Click a text region in **Edit a PDF → Edit text and images**. One editor contains its
 source rows and mixed styles. Embedded TrueType and OpenType/CFF faces are used in memory;
 source font programs, colour, size and baseline anchors stay intact. A textless preview

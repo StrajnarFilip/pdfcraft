@@ -901,6 +901,38 @@ fn text_editor_background_is_read_only_and_removes_source_glyphs() {
 }
 
 #[test]
+fn paragraph_move_pixels_are_transparent_and_read_only_through_tools() {
+    let dir = workdir("paragraph-move-preview");
+    let mut a = auto(&dir);
+    let doc = ok(&mut a, "doc_open", json!({"path":"a.pdf"}))["doc"].as_u64().unwrap();
+    let before = ok(&mut a, "doc_info", json!({"doc":doc}));
+    ok(&mut a, "text_paragraphs", json!({"doc":doc,"page":1}));
+    let preview = a.call("page_render", &json!({"doc":doc,"page":1,"dpi":72,"text_block_preview":1})).unwrap();
+    let Content::Png { data, .. } = &preview[0] else { panic!("expected PNG") };
+    let mut reader = png::Decoder::new(std::io::Cursor::new(data)).read_info().unwrap();
+    let mut pixels = vec![0; reader.output_buffer_size().unwrap()];
+    let info = reader.next_frame(&mut pixels).unwrap();
+    assert_eq!(info.color_type, png::ColorType::Rgba);
+    let pixels = &pixels[..info.buffer_size()];
+    assert_eq!(pixels[3], 0, "the page background is transparent");
+    assert!(pixels.chunks_exact(4).any(|p| p[3] > 0), "the selected source glyphs remain");
+    let background = a.call("page_render", &json!({"doc":doc,"page":1,"dpi":72,"text_block_preview":1,"text_block_layer":"background"})).unwrap();
+    let hidden = a.call("page_render", &json!({"doc":doc,"page":1,"dpi":72,"hide_text_block":1})).unwrap();
+    assert_eq!(background, hidden, "a page without overlapping copies has the same background");
+    assert_eq!(ok(&mut a, "doc_info", json!({"doc":doc})), before);
+    for block in [-1, 0, 2, i64::MAX] {
+        assert!(a.call("page_render", &json!({"doc":doc,"page":1,"text_block_preview":block})).is_err());
+    }
+    for key in ["hide_text_block", "hide_added_text"] {
+        let mut args = json!({"doc":doc,"page":1,"text_block_preview":1});
+        args[key] = json!(1);
+        assert!(a.call("page_render", &args).is_err());
+    }
+    assert!(a.call("page_render", &json!({"doc":doc,"page":1,"text_block_layer":"background"})).is_err());
+    assert!(a.call("page_render", &json!({"doc":doc,"page":1,"text_block_preview":1,"text_block_layer":"unknown"})).is_err());
+}
+
+#[test]
 fn added_text_editor_background_hides_only_the_item_without_editing() {
     let dir = workdir("added-text-preview");
     let mut a = auto(&dir);

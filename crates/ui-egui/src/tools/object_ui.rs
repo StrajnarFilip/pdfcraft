@@ -46,6 +46,15 @@ impl ObjectSelection {
         self.selected.len()
     }
 
+    pub(crate) fn moving_paragraph(&self, generation: u64) -> Option<(usize, usize, Pos2)> {
+        let gesture = self.gesture.filter(|g| !g.marquee)?;
+        if self.generation != Some(generation) || self.selected.len() != 1 {
+            return None;
+        }
+        let object = self.selected.first().filter(|o| o.target.kind == ObjectKind::Text)?;
+        Some((self.page?, object.target.index, gesture.start))
+    }
+
     /// A preview belongs to the active, focused document. Returning from another tab or a
     /// modal must not turn a release that happened elsewhere into a document edit.
     pub fn set_input_blocked(&mut self, blocked: bool) {

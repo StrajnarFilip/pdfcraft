@@ -231,6 +231,15 @@ pub struct BlockDrag {
     grip: Grip,
 }
 
+/// The single source paragraph captured for a move, including a paragraph picked up by its
+/// open editor's frame. Resize gestures and mixed-object selections keep their own previews.
+pub(crate) fn moving_paragraph(view: &DocView, generation: u64) -> Option<(usize, usize, Pos2)> {
+    view.block_drag
+        .filter(|d| d.generation == generation && d.grip == Grip::Move)
+        .map(|d| (d.page, d.block, d.start))
+        .or_else(|| view.objects.moving_paragraph(generation))
+}
+
 /// How far an edge grip reaches either side of a box's edge (screen pixels).
 const EDGE_REACH: f32 = 6.0;
 /// How far outside an open paragraph's frame the pointer still means the frame (screen pixels).
@@ -344,8 +353,9 @@ pub(crate) fn page_input(cx: PageToolContext<'_>, lines: &[pdfcraft_engine::Text
     // Outlines stay on their page, like its text (#3061).
     let painter = ui.painter().with_clip_rect(ui.clip_rect().intersect(xf.rect.expand(1.0)));
     let active = view.line_editor.as_ref().filter(|e| e.page == page).map(|e| e.block);
+    let moving = moving_paragraph(view, doc.edit_generation()).filter(|(p, _, _)| *p == page).map(|(_, block, _)| block);
     for (i, b) in boxes.iter().enumerate() {
-        if active != Some(i) {
+        if active != Some(i) && moving != Some(i) {
             painter.rect_stroke(*b, CornerRadius::same(2), Stroke::new(0.75, ACCENT.gamma_multiply(0.35)), egui::StrokeKind::Outside);
         }
     }

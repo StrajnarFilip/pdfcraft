@@ -4463,6 +4463,88 @@ fn paragraph_drag_shot(h: &mut Harness<'static, PdfCraftApp>, name: &str) {
     }
 }
 
+#[test]
+fn a_dragged_paragraphs_pixels_follow_the_pointer_without_moving_its_background() {
+    check_paragraph_pixel_drag(false);
+}
+
+#[test]
+fn an_open_paragraphs_frame_drag_previews_its_pixels() {
+    check_paragraph_pixel_drag(true);
+}
+
+fn check_paragraph_pixel_drag(open_editor: bool) {
+    let _gpu = gpu();
+    let content = "0.75 0.9 1 rg 35 350 300 95 re f \
+        BT /F1 16 Tf 0.85 0.1 0.1 rg 50 420 Td (Moving paragraph) Tj 0 -22 Td (Both lines follow the pointer) Tj ET \
+        BT /F1 12 Tf 0.1 0.55 0.2 rg 50 260 Td (Stationary neighbor) Tj ET";
+    let mut h = paragraph_drag_harness(paragraph_drag_fixture(content, 0, 1), 0);
+    crate::support::settle(&mut h);
+    let before = dragged_paragraphs(&h);
+    let moving = before.iter().find(|b| b.text.starts_with("Moving paragraph")).unwrap();
+    let (mut from, mut to) = paragraph_drag_points(&h, &moving.text, [100.0, -110.0]);
+    let doc = h.state().session.get(h.state().views[0].id).unwrap();
+    let bytes = doc.bytes.clone();
+    let xf = pdfcraft_ui_egui::canvas::PageXform {
+        rect: h.state().views[0].page_screen_rect(0).unwrap(),
+        rot: 0,
+        pw: doc.info.pages[0].width,
+        ph: doc.info.pages[0].height,
+    };
+    let original = xf.user_rect(&doc.info, 0, moving.rect.map(|v| v as f32)).expand(1.0);
+    if open_editor {
+        click_at(&mut h, from);
+        assert!(h.state().views[0].line_editor.is_some());
+        let delta = to - from;
+        from = original.left_center() - egui::vec2(4.0, 0.0);
+        to = from + delta;
+    }
+    h.hover_at(from);
+    h.run_steps(1);
+    h.drag_at(from);
+    h.run_steps(1);
+    h.hover_at(from + (to - from) * 0.1);
+    h.run_steps(2);
+    h.hover_at(to);
+    crate::support::settle(&mut h);
+    if !open_editor {
+        paragraph_drag_shot(&mut h, "paragraph-drag.png");
+        if let Ok(directory) = std::env::var("PDFCRAFT_PARAGRAPH_DRAG_SHOTS") {
+            std::fs::write(std::path::Path::new(&directory).join("paragraph-drag.pdf"), bytes.as_slice()).unwrap();
+        }
+    }
+    let image = h.render().unwrap();
+    let red = |rect: egui::Rect| {
+        (rect.top().max(0.0) as u32..(rect.bottom() as u32).min(image.height()))
+            .flat_map(|y| (rect.left().max(0.0) as u32..(rect.right() as u32).min(image.width())).map(move |x| (x, y)))
+            .filter(|&(x, y)| matches!(image.get_pixel(x, y).0, [r, g, b, _] if r > 150 && g < 90 && b < 90))
+            .count()
+    };
+    assert!(red(original.translate(to - from)) > 30, "the paragraph's own pixels must follow the pointer before release");
+    assert_eq!(red(original), 0, "the source glyphs must not stay behind");
+    let blue = |rect: egui::Rect| {
+        (rect.top().max(0.0) as u32..(rect.bottom() as u32).min(image.height()))
+            .flat_map(|y| (rect.left().max(0.0) as u32..(rect.right() as u32).min(image.width())).map(move |x| (x, y)))
+            .filter(|&(x, y)| matches!(image.get_pixel(x, y).0, [r, g, b, _] if r > 170 && r < 215 && g > 215 && b > 245))
+            .count()
+    };
+    assert!(blue(original) > 300, "the colored artwork beneath the source text stays visible");
+    // The blue frame's antialiasing can match a few background-colored pixels.
+    assert!(blue(original.translate(to - from)) < 5, "the source background must not come along");
+    let doc = h.state().session.get(h.state().views[0].id).unwrap();
+    assert_eq!(doc.bytes, bytes, "previewing does not edit the document");
+    assert!(doc.can_undo().is_none());
+    assert_dragged_paragraphs(&dragged_paragraphs(&h), &before);
+    h.drop_at(to);
+    crate::support::settle(&mut h);
+    let doc = h.state().session.get(h.state().views[0].id).unwrap();
+    assert!(doc.can_undo().is_some());
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+    crate::support::settle(&mut h);
+    assert_dragged_paragraphs(&dragged_paragraphs(&h), &before);
+    assert!(h.state().session.get(h.state().views[0].id).unwrap().can_undo().is_none(), "the release creates one undo step");
+}
+
 fn check_paragraph_overlap_drag(identical: bool, reopen_between: bool) {
     let _gpu = gpu();
     let (stationary, moving) = if identical { ("Repeated", "Repeated") } else { ("Stationary beta", "Moving alpha") };

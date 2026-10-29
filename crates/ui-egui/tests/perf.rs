@@ -169,6 +169,55 @@ fn scrolling_a_500_page_document_stays_within_the_frame_budget() {
 }
 
 #[test]
+fn dragging_a_paragraph_stays_within_the_frame_budget() {
+    if overloaded() {
+        return;
+    }
+    let _turn = SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let bytes = big(1);
+    let mut h = Harness::builder().with_size(egui::vec2(1400.0, 900.0)).build_eframe(move |_cc| {
+        let mut app = PdfCraftApp::new();
+        app.set_option("language", "en").unwrap();
+        app.open_bytes("paragraph-drag.pdf", None, bytes).expect("opens");
+        app.set_option("zoom", "75").unwrap();
+        assert!(app.execute("edit.edit_text"));
+        app
+    });
+    h.run_steps(4);
+    let app = h.state();
+    let view = &app.views[0];
+    let doc = app.session.get(view.id).unwrap();
+    let block = doc.text_blocks(0).first().unwrap().clone();
+    let xf = pdfcraft_ui_egui::canvas::PageXform {
+        rect: view.page_screen_rect(0).unwrap(),
+        rot: view.rotation,
+        pw: doc.info.pages[0].width,
+        ph: doc.info.pages[0].height,
+    };
+    let from = xf.user_rect(&doc.info, 0, block.rect.map(|v| v as f32)).center();
+    h.hover_at(from);
+    h.run_steps(1);
+    h.drag_at(from);
+    h.run_steps(1);
+    h.hover_at(from + egui::vec2(10.0, 0.0));
+    h.run_steps(2);
+    assert!(h.state().views[0].block_drag.is_some());
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while h.state().render_pending() && std::time::Instant::now() < deadline {
+        h.step();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(!h.state().render_pending(), "the drag's two rasters finish before measuring pointer updates");
+    let avg = best_average("paragraph drag", 120, |f| {
+        h.hover_at(from + egui::vec2(12.0 + (f % 120) as f32, 0.0));
+        h.step();
+    });
+    assert!(avg < BUDGET, "paragraph drag: average frame {avg:?}");
+    h.drop_at(from + egui::vec2(131.0, 0.0));
+    h.run_steps(4);
+}
+
+#[test]
 fn panels_with_hundreds_of_items_stay_within_the_frame_budget() {
     if overloaded() {
         return;

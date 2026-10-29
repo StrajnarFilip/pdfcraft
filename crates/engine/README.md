@@ -93,3 +93,8 @@ family (`sign`, `sign_with_timestamp`, `timestamp_document`, `embed_ltv`).
 `doc.text_edit_preview(page, block)` prepares a read-only page background with the selected
 paragraph’s glyphs removed, preserving text positioning, images and colours. It shares the
 working document’s render configuration and never enters the undo history.
+
+`doc.text_block_alone(page, block)` supplies a transparent source-glyph layer, paired with
+`doc.text_block_background(page, block)` for a move preview. Source encodings, fonts and advances
+are retained; other text, artwork and annotations do not travel with the paragraph. A page using
+text clipping modes is refused.

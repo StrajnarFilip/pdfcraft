@@ -136,6 +136,30 @@ impl Document {
         })?
     }
 
+    /// A paragraph's source glyphs alone on a transparent page, for moving its pixels without
+    /// moving the background beneath it. Read-only; no working bytes or history are changed.
+    pub fn text_block_alone(&self, page: usize, block: usize) -> Result<TextEditPreview, String> {
+        guard(|| {
+            let editor = self.editor.as_ref().ok_or("the document can't be read")?;
+            let mut cos = editor.cos.clone();
+            pdfcraft_edit::text::isolate_block(&mut cos, page, block).map_err(|e| e.to_string())?;
+            let bytes = Arc::new(pdfcraft_cos::write_incremental(&cos, &pdfcraft_cos::SaveOptions::default()).map_err(|e| e.to_string())?);
+            Ok(TextEditPreview { page, bytes, config: RenderConfig { transparent: true, ..self.config.clone() } })
+        })?
+    }
+
+    /// The page without precisely the source operators a paragraph move selects. Independent
+    /// overlapping copies stay where they are; the editor's coincident-copy removal is not used.
+    pub fn text_block_background(&self, page: usize, block: usize) -> Result<TextEditPreview, String> {
+        guard(|| {
+            let editor = self.editor.as_ref().ok_or("the document can't be read")?;
+            let mut cos = editor.cos.clone();
+            pdfcraft_edit::text::clear_block_for_move(&mut cos, page, block).map_err(|e| e.to_string())?;
+            let bytes = Arc::new(pdfcraft_cos::write_incremental(&cos, &pdfcraft_cos::SaveOptions::default()).map_err(|e| e.to_string())?);
+            Ok(TextEditPreview { page, bytes, config: self.config.clone() })
+        })?
+    }
+
     /// The page beneath an added item while it is dragged: `index` counts the page's added
     /// items, as `Edit::DeleteContent` does. Read-only, like [`Self::text_edit_preview`].
     pub fn added_content_preview(&self, page: usize, index: usize) -> Result<TextEditPreview, String> {

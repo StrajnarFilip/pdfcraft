@@ -426,6 +426,7 @@ pub struct DocView {
     pub(crate) pending_text_open: Option<(usize, pdfcraft_engine::BlockKey)>,
     pub(crate) text_background: crate::edit_text_ui::TextBackground,
     pub(crate) move_background: crate::content_ui::MoveBackground,
+    pub(crate) paragraph_background: crate::content_ui::MoveBackground,
     /// Edit text & images: the images per page (by document generation), and the selected one.
     pub(crate) edit_images: HashMap<usize, (u64, Vec<pdfcraft_engine::PageImage>)>,
     pub(crate) objects: crate::object_ui::ObjectSelection,
@@ -681,6 +682,7 @@ impl DocView {
             pending_text_open: None,
             text_background: Default::default(),
             move_background: Default::default(),
+            paragraph_background: Default::default(),
             edit_images: HashMap::new(),
             objects: Default::default(),
             image_selection: None,
@@ -1731,6 +1733,8 @@ fn draw_page(ui: &mut egui::Ui, view: &mut DocView, frame: &mut PageFrame<'_>, i
     view.text_background.paint(painter, &xf, i, view.line_editor.as_ref(), view.content.draft.as_ref());
     if editing_content {
         view.move_background.paint(painter, &xf, i, info, &view.content, pointer);
+        let moving = crate::edit_text_ui::moving_paragraph(view, doc.edit_generation());
+        view.paragraph_background.paint_paragraph(painter, &xf, i, info, moving, pointer);
     }
     if view.show_page_gaps {
         painter.rect_stroke(r, CornerRadius::ZERO, Stroke::new(0.5, t.border.gamma_multiply(0.8)), egui::StrokeKind::Outside);
@@ -2975,6 +2979,8 @@ pub fn document_area(app: &mut PdfCraftApp, index: usize, ui: &mut egui::Ui) {
         view.content.selected = None;
     }
     view.move_background.prepare(ui.ctx(), doc, &view.content, scale);
+    let moving = matches!(tool, QuickTool::EditText | QuickTool::AddText).then(|| crate::edit_text_ui::moving_paragraph(view, generation)).flatten();
+    view.paragraph_background.prepare_paragraph(ui.ctx(), doc, moving, scale);
 
     scroll = refine_goto_point(scroll, view, &ScrollGeometry { rects: &rects, y_shift, content_w, content_h, avail, middle_gesture, hand });
     let selection_wheel = view.selection_drag && navigation_enabled && unobstructed && !single_paging && ui.rect_contains_pointer(avail);

@@ -256,12 +256,36 @@ pub fn text_blocks(doc: &Document, page: usize) -> Result<Vec<TextBlock>, EditEr
 /// preserve the text matrix, so unselected text positioned relative to it stays in place.
 /// Call this on a clone: it is a preview operation, not a document edit.
 pub fn clear_block(doc: &mut Document, page: usize, block: usize) -> Result<(), EditError> {
+    preview_block(doc, page, block, BlockPreview::EditBackground)
+}
+
+/// Remove precisely the paragraph a move translates, keeping independent overlapping copies.
+pub fn clear_block_for_move(doc: &mut Document, page: usize, block: usize) -> Result<(), EditError> {
+    preview_block(doc, page, block, BlockPreview::MoveBackground)
+}
+
+/// Keep only a paragraph's original glyphs for a transparent drag preview. Call on a clone;
+/// this preserves source fonts, text advances and clipping, rather than retyping the text.
+pub fn isolate_block(doc: &mut Document, page: usize, block: usize) -> Result<(), EditError> {
+    preview_block(doc, page, block, BlockPreview::Glyphs)
+}
+
+enum BlockPreview {
+    EditBackground,
+    MoveBackground,
+    Glyphs,
+}
+
+fn preview_block(doc: &mut Document, page: usize, block: usize, mode: BlockPreview) -> Result<(), EditError> {
+    let isolate = matches!(mode, BlockPreview::Glyphs);
     let lines = text_lines(doc, page)?;
     let blocks = group_blocks(&lines);
     let target = blocks.get(block).ok_or_else(|| EditError::Invalid("the paragraph no longer exists".into()))?;
     let targets: Vec<&TextLine> = target.lines.iter().filter_map(|i| lines.get(*i)).collect();
     targets.iter().try_for_each(|line| line.ensure_editable())?;
-    let mut drops = coincident_ops(&lines, &targets);
+    // Editing retires coincident copies (e.g. fake-bold text); moving preserves independent
+    // overlapping objects and must select exactly the operators translate_blocks selects.
+    let mut drops = if matches!(mode, BlockPreview::EditBackground) { coincident_ops(&lines, &targets) } else { Default::default() };
     drops.extend(target.lines.iter().filter_map(|i| lines.get(*i)).flat_map(|l| l.ops.iter().copied()));
     let p = page_dict(doc, page)?;
     let res = p.dict.get(b"Resources").and_then(|r| doc.resolve(r).as_dict().cloned()).unwrap_or_default();
@@ -269,8 +293,12 @@ pub fn clear_block(doc: &mut Document, page: usize, block: usize) -> Result<(), 
     let pieces = Pieces::join(&streams.iter().map(|(_, d)| d.as_slice()).collect::<Vec<_>>());
     let ops = pieces.parse().ops;
     let shown = interpret(doc, &ops, &res, &mut HashMap::new(), &mut Carry::new(), None, None)?;
+    if isolate && shown.iter().any(|s| s.state.render_mode >= 4) {
+        // Removing another clipping text run would change the selected paragraph's mask.
+        return Err(EditError::Invalid("text used as a clipping path cannot be isolated for a preview".into()));
+    }
     let mut patches = HashMap::new();
-    for s in shown.into_iter().filter(|s| drops.contains(&s.op)) {
+    for s in shown.into_iter().filter(|s| drops.contains(&s.op) != isolate) {
         if s.state.render_mode >= 4 {
             return Err(EditError::Invalid("text used as a clipping path cannot be previewed for editing".into()));
         }
@@ -292,9 +320,27 @@ pub fn clear_block(doc: &mut Document, page: usize, block: usize) -> Result<(), 
         replacement.push(Op::new("TJ", vec![Object::Array(vec![pdfcraft_content::num(adjustment)])]));
         patches.insert(s.op, replacement);
     }
-    let data = splice(&pieces, &ops, |i| patches.remove(&i).map_or((Vec::new(), true), |v| (v, false)));
+    let data = splice(&pieces, &ops, |i| {
+        if let Some(replacement) = patches.remove(&i) {
+            return (replacement, false);
+        }
+        if isolate && let Some(op) = ops.get(i) {
+            match op.op.as_slice() {
+                // End paths without painting them. W/W* still applies its clip at n.
+                b"S" | b"s" | b"f" | b"F" | b"f*" | b"B" | b"B*" | b"b" | b"b*" => return (vec![Op::new("n", vec![])], false),
+                b"Do" | b"BI" | b"sh" => return (Vec::new(), false),
+                _ => {}
+            }
+        }
+        (Vec::new(), true)
+    });
     let contents = rewritten_contents(doc, &streams, data);
-    doc.update_dict(p.obj, |d| d.set(b"Contents".to_vec(), contents))?;
+    doc.update_dict(p.obj, |d| {
+        d.set(b"Contents".to_vec(), contents);
+        if isolate {
+            d.remove(b"Annots");
+        }
+    })?;
     Ok(())
 }
 

@@ -2454,6 +2454,55 @@ fn editor_background_refuses_clipping_text_without_mutation() {
 }
 
 #[test]
+fn isolated_paragraph_keeps_source_positions_and_removes_other_paint() {
+    for show in ["(ab) Tj", "[(a) -20 (b)] TJ", "(ab) '", "2 1 (ab) \""] {
+        let mut doc = text_page(&format!(
+            "q 20 20 500 740 re W n 0 0 1 rg 20 20 500 740 re f \
+             BT /F1 12 Tf 120 TL 72 700 Td (Other) Tj [-8000] TJ /F2 12 Tf {show} ET Q"
+        ));
+        let lines = text::text_lines(&doc, 0).unwrap();
+        let expected = lines.iter().find(|l| l.text == "ab").unwrap().clone();
+        let index = text::text_blocks(&doc, 0).unwrap().iter().position(|b| b.text == "ab").unwrap();
+        text::isolate_block(&mut doc, 0, index).unwrap();
+        let after = text::text_lines(&reopen(&doc), 0).unwrap();
+        assert_eq!(after.len(), 1, "{show}");
+        assert_eq!(after[0].text, expected.text);
+        assert_eq!(after[0].font, expected.font);
+        for (a, b) in after[0].rect.iter().zip(expected.rect) {
+            assert!((a - b).abs() < 1e-6, "source text moved: {show}");
+        }
+        let ops = pdfcraft_content::parse(&page_content_bytes(&doc, 0)).ops;
+        assert!(ops.iter().any(|op| op.is("W")), "the source clip is kept");
+        assert!(!ops.iter().any(|op| op.is("f")), "the background is not painted");
+    }
+}
+
+#[test]
+fn isolated_paragraph_refuses_clipping_text_or_a_missing_index_without_mutation() {
+    let mut doc = text_page("BT /F1 12 Tf 72 700 Td (Ordinary) Tj ET BT /F1 12 Tf 7 Tr 72 600 Td (Mask) Tj ET");
+    let before = page_content_bytes(&doc, 0);
+    assert!(text::isolate_block(&mut doc, 0, 0).is_err());
+    assert!(text::isolate_block(&mut doc, 0, usize::MAX).is_err());
+    assert_eq!(page_content_bytes(&doc, 0), before);
+}
+
+#[test]
+fn paragraph_move_layers_keep_independent_coincident_copies_separate() {
+    let doc = text_page("0 0.6 0 rg BT /F1 16 Tf 72 700 Td (Repeated) Tj ET 0.9 0 0 rg BT /F1 16 Tf 72 700 Td (Repeated) Tj ET");
+    assert_eq!(text::text_blocks(&doc, 0).unwrap().len(), 2);
+    let mut background = doc.clone();
+    text::clear_block_for_move(&mut background, 0, 1).unwrap();
+    let background = text::text_lines(&reopen(&background), 0).unwrap();
+    assert_eq!(background.len(), 1, "the independent copy stays behind");
+    assert_eq!(background[0].color, [0.0, 0.6, 0.0]);
+    let mut glyphs = doc;
+    text::isolate_block(&mut glyphs, 0, 1).unwrap();
+    let glyphs = text::text_lines(&reopen(&glyphs), 0).unwrap();
+    assert_eq!(glyphs.len(), 1, "only the selected copy follows the pointer");
+    assert_eq!(glyphs[0].color, [0.9, 0.0, 0.0]);
+}
+
+#[test]
 fn explicit_colour_spaces_expose_the_text_colour() {
     let doc = text_page("/DeviceRGB cs 0 0.23 0.45 sc BT /F1 12 Tf 72 700 Td (Blue) Tj ET");
     assert_eq!(text::text_blocks(&doc, 0).unwrap()[0].color, [0.0, 0.23, 0.45]);

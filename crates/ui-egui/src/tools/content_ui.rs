@@ -116,12 +116,18 @@ impl ContentView {
     }
 }
 
-/// While an added item is moved, or a picture resized by a corner, the page without it, rendered
+#[derive(Clone, Copy, PartialEq)]
+enum MoveTarget {
+    Added(usize),
+    Paragraph(usize),
+}
+
+/// While an item is moved, or a picture resized by a corner, the page without it, rendered
 /// once per gesture: the item's own pixels follow the pointer over it instead of staying put until
 /// release (#1488).
 #[derive(Default)]
 pub(crate) struct MoveBackground {
-    key: Option<(u64, usize, usize)>,
+    key: Option<(u64, usize, MoveTarget)>,
     renderer: Option<pdfcraft_render::RenderPool>,
     texture: Option<egui::TextureHandle>,
     /// The item alone on a transparent page: the pixels that follow the pointer. The page's own
@@ -129,7 +135,8 @@ pub(crate) struct MoveBackground {
     item_renderer: Option<pdfcraft_render::RenderPool>,
     item: Option<egui::TextureHandle>,
     tag: Option<u64>,
-    /// The item's display-space box when the gesture started.
+    /// The item's box when the gesture started: user space for source paragraphs, display
+    /// space for added content.
     from: Option<[f64; 4]>,
     /// The item is a picture: a corner stretches its pixels, and it keeps its whole applied box.
     picture: bool,
@@ -151,18 +158,41 @@ impl MoveBackground {
     pub fn prepare(&mut self, ctx: &egui::Context, doc: &pdfcraft_engine::Document, cv: &ContentView, scale: f32) {
         let picture = |page, index| on_page(doc.added(), page).into_iter().any(|(i, a)| i == index && matches!(a.content, AddedContent::Image(_)));
         let key = match (cv.grab, cv.selected) {
-            (Some((gp, Grab::Move, _)), Some((sp, si))) if gp == sp => Some((doc.edit_generation(), sp, si)),
+            (Some((gp, Grab::Move, _)), Some((sp, si))) if gp == sp => Some((doc.edit_generation(), sp, MoveTarget::Added(si))),
             // Text resized by a corner rewraps, so only a picture's pixels can follow the corner.
-            (Some((gp, Grab::Corner(..), _)), Some((sp, si))) if gp == sp && picture(sp, si) => Some((doc.edit_generation(), sp, si)),
+            (Some((gp, Grab::Corner(..), _)), Some((sp, si))) if gp == sp && picture(sp, si) => {
+                Some((doc.edit_generation(), sp, MoveTarget::Added(si)))
+            }
             _ => None,
         };
+        self.prepare_target(ctx, doc, key, scale);
+    }
+
+    pub fn prepare_paragraph(&mut self, ctx: &egui::Context, doc: &pdfcraft_engine::Document, moving: Option<(usize, usize, Pos2)>, scale: f32) {
+        let key = moving.map(|(page, block, _)| (doc.edit_generation(), page, MoveTarget::Paragraph(block)));
+        self.prepare_target(ctx, doc, key, scale);
+    }
+
+    fn prepare_target(&mut self, ctx: &egui::Context, doc: &pdfcraft_engine::Document, key: Option<(u64, usize, MoveTarget)>, scale: f32) {
         if !(key.is_none() && self.settling.is_some()) && self.key != key {
             *self = Self { key, ..Default::default() };
-            if let Some((_, page, index)) = key {
-                self.renderer = doc.added_content_preview(page, index).ok().map(|p| p.renderer());
-                self.item_renderer = doc.added_content_alone(page, index).ok().map(|p| p.renderer());
-                self.from = on_page(doc.added(), page).into_iter().find(|(i, _)| *i == index).map(|(_, a)| a.content.rect());
-                self.picture = picture(page, index);
+            if let Some((_, page, target)) = key {
+                let previews = match target {
+                    MoveTarget::Added(index) => {
+                        self.from = on_page(doc.added(), page).into_iter().find(|(i, _)| *i == index).map(|(_, a)| a.content.rect());
+                        self.picture = on_page(doc.added(), page).into_iter().any(|(i, a)| i == index && matches!(a.content, AddedContent::Image(_)));
+                        doc.added_content_preview(page, index).and_then(|background| Ok((background, doc.added_content_alone(page, index)?)))
+                    }
+                    MoveTarget::Paragraph(block) => {
+                        self.from = doc.text_blocks(page).get(block).map(|b| b.rect);
+                        doc.text_block_background(page, block).and_then(|background| Ok((background, doc.text_block_alone(page, block)?)))
+                    }
+                };
+                // Keep neither half on failure: showing just the background would hide the item.
+                if let Ok((background, item)) = previews {
+                    self.renderer = Some(background.renderer());
+                    self.item_renderer = Some(item.renderer());
+                }
             }
         }
         if self.settling.is_some() {
@@ -221,9 +251,23 @@ impl MoveBackground {
     /// rendered again. Any other edit ends it.
     pub fn committed(&mut self, edit: &Edit, generation: u64) {
         match edit {
-            Edit::UpdateContent { page, index, content } if self.ready() && self.key.is_some_and(|(_, p, i)| (p, i) == (*page, *index)) => {
-                self.key = Some((generation, *page, *index));
+            Edit::UpdateContent { page, index, content }
+                if self.ready() && self.key.is_some_and(|(_, p, target)| (p, target) == (*page, MoveTarget::Added(*index))) =>
+            {
+                self.key = Some((generation, *page, MoveTarget::Added(*index)));
                 self.settling = Some(content.rect());
+            }
+            Edit::MoveObjects { page, objects, offset } if self.ready() && objects.len() == 1 => {
+                let Some(object) = objects.first().filter(|o| o.kind == pdfcraft_engine::ObjectKind::Text) else {
+                    *self = Self::default();
+                    return;
+                };
+                if self.key.is_some_and(|(_, p, target)| (p, target) == (*page, MoveTarget::Paragraph(object.index))) {
+                    self.key = Some((generation, *page, MoveTarget::Paragraph(object.index)));
+                    self.settling = self.from.map(|r| [r[0] + offset[0], r[1] + offset[1], r[2] + offset[0], r[3] + offset[1]]);
+                } else {
+                    *self = Self::default();
+                }
             }
             _ => *self = Self::default(),
         }
@@ -239,7 +283,7 @@ impl MoveBackground {
     /// nothing it covered comes along) at the dragged (to the pages' `pointer`) or applied
     /// position.
     pub fn paint(&self, painter: &egui::Painter, xf: &PageXform, page: usize, info: &DocInfo, cv: &ContentView, pointer: Option<Pos2>) {
-        let (Some((_, kp, _)), Some(background), Some(item), Some(from)) = (self.key, &self.texture, &self.item, self.from) else { return };
+        let (Some((_, kp, MoveTarget::Added(_))), Some(from)) = (self.key, self.from) else { return };
         if kp != page {
             return;
         }
@@ -254,10 +298,42 @@ impl MoveBackground {
         } else {
             return;
         };
+        self.paint_at(painter, xf, r.expand(1.0), to.expand(1.0));
+    }
+
+    /// Source glyphs use the whole transparent page, including any ink overhanging their
+    /// measured box. Only two cached textures are drawn as the pointer moves.
+    pub fn paint_paragraph(
+        &self,
+        painter: &egui::Painter,
+        xf: &PageXform,
+        page: usize,
+        info: &DocInfo,
+        moving: Option<(usize, usize, Pos2)>,
+        pointer: Option<Pos2>,
+    ) {
+        let (Some((_, kp, MoveTarget::Paragraph(block))), Some(from)) = (self.key, self.from) else { return };
+        if kp != page {
+            return;
+        }
+        let delta = if let Some((_, _, start)) = moving.filter(|(p, b, _)| (*p, *b) == (page, block)) {
+            let Some(pointer) = pointer else { return };
+            pointer - start
+        } else if let Some(to) = self.settling {
+            xf.user_rect(info, page, to.map(|v| v as f32)).min - xf.user_rect(info, page, from.map(|v| v as f32)).min
+        } else {
+            return;
+        };
+        if !delta.is_finite() {
+            return;
+        }
+        self.paint_at(painter, xf, xf.rect, xf.rect.translate(delta));
+    }
+
+    fn paint_at(&self, painter: &egui::Painter, xf: &PageXform, r: Rect, to: Rect) {
+        let (Some(background), Some(item)) = (&self.texture, &self.item) else { return };
         let painter = painter.with_clip_rect(painter.clip_rect().intersect(xf.rect));
         xf.paint_image(&painter, background.id(), 0.0, 0.0, 1.0, 1.0);
-        // A pixel around the box, so its edges come along.
-        let (r, to) = (r.expand(1.0), to.expand(1.0));
         let mut mesh = egui::Mesh::with_texture(item.id());
         for (a, b) in [
             (r.left_top(), to.left_top()),
@@ -1067,7 +1143,7 @@ mod tests {
             pool
         };
         let mut mb = MoveBackground {
-            key: Some((0, 0, 0)),
+            key: Some((0, 0, MoveTarget::Added(0))),
             renderer: Some(pool()),
             texture: texture("background"),
             item_renderer: Some(pool()),

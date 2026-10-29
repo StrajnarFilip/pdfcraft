@@ -193,6 +193,12 @@ undoable and survive saving/reopening. `image_hit` shares the UI's curve and hol
 The bounds, limits and font requirements are in [existing-text editing](../../docs/editing-existing-text.md)
 and [image editing](../../docs/editing-images.md).
 
+`page_render.text_block_preview` prepares a paragraph move preview using `text_paragraphs`
+numbering. `text_block_layer: "glyphs"` (the default) renders its original glyphs on transparency;
+`"background"` renders the page without precisely that paragraph, keeping independent overlapping
+copies in place. It is mutually exclusive with both hide options, leaves document bytes/history
+unchanged, and refuses text clipping modes rather than changing their masks.
+
 ## Opening local GoToR links
 
 `link_open {doc, page, index, password?}` follows a local PDF link using `link_list`

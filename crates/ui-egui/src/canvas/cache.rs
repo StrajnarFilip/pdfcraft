@@ -127,7 +127,7 @@ impl DocView {
     }
 
     pub fn render_pending(&self) -> bool {
-        !self.last_queue.is_empty() || self.text_background.pending() || self.move_background.pending()
+        !self.last_queue.is_empty() || self.text_background.pending() || self.move_background.pending() || self.paragraph_background.pending()
     }
 
     /// The cached tile keys of a page, as (scale tag, tile x, tile y) (diagnostics and tests).
@@ -288,6 +288,7 @@ impl DocView {
         self.signature_drag = Default::default();
         self.text_background = Default::default();
         self.move_background = Default::default();
+        self.paragraph_background = Default::default();
         if !self.last_queue.is_empty() {
             pool.set_queue(Vec::new());
             self.last_queue.clear();
@@ -595,6 +596,7 @@ impl DocView {
             self.pages.insert(page, PageTex { tag: r.request.tag, tex });
             self.signature_drag.page_received(page);
             self.move_background.page_received(page);
+            self.paragraph_background.page_received(page);
             if !self.page_out_of_date(page) {
                 self.text_background.page_received(page);
             }
